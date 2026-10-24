@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Allow HTTP to the hub on the LAN (loopback in the simulator). Spotify
+	     cover art is HTTPS and needs no exception. Other generated Info.plist
+	     keys (scene manifest, orientation, launch screen) are merged in at
+	     build time. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- iOS 14+ local-network privacy prompt: required for a device to
+	     reach the hub and the Sonos speakers' art server over the LAN. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>CONSOL uses your local network to connect to your hub and Sonos speakers.</string>
+	<!-- Bonjour browsing (iOS 14+ requires declaring every browsed type):
+	     the hub's keeper advertises this; the app finds the hub by itself. -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_consol-hub._tcp</string>
+	</array>
+	<!-- Landscape-locked by design: opting out of iPad multitasking is what
+	     lets a landscape-only app pass App Store validation. -->
+	<key>UIRequiresFullScreen</key>
+	<true/>
+	<!-- Export compliance: only standard HTTPS/ATS encryption, nothing custom.
+	     Answers TestFlight's "Missing Compliance" question for every build. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+</dict>
+</plist>

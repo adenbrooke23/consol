@@ -1,0 +1,36 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+# The Mac app copies hub/ into its own bundle at build time (into the build
+# products folder, covered by build/ and DerivedData/ above). Nothing is
+# generated inside the source tree.
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Hub secrets and state: never commit these
+hub/.env
+.env
+hub/data.db
+hub/data.db-*
+hub/data.db.*
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+hub/logs/
+
+# General Sans may not be redistributed. Builders download it themselves
+# (see README, "Build the iPad app"); keep local copies out of commits.
+Console/Console/Fonts/GeneralSans-*

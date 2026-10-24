@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The app talks to the hub/keeper over plain HTTP on this Mac. -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!-- Install-time speaker discovery multicasts on the LAN, which the
+	     launchd-run hub is not allowed to do. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>CONSOL Hub uses your local network to find your Sonos speakers during setup, so the hub knows your rooms from its first start.</string>
+</dict>
+</plist>

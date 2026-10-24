@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Template for installing the keeper by hand. The CONSOL Hub Mac app
+	     writes an equivalent plist itself, with the hub directory at
+	     ~/Library/Application Support/CONSOL/hub.
+	     Replace every /path/to/hub below with the absolute path of the hub
+	     directory (the one containing hubkeeper.py and .venv), then:
+	       cp hub/launchd/local.consol.hubkeeper.plist ~/Library/LaunchAgents/
+	       launchctl bootstrap gui/$UID ~/Library/LaunchAgents/local.consol.hubkeeper.plist
+	     launchd relaunches the keeper if it exits and starts it at login.
+	     The keeper autostarts the hub, so a reboot brings the whole stack
+	     back with no terminal involved. -->
+	<key>Label</key>
+	<string>local.consol.hubkeeper</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/path/to/hub/.venv/bin/python</string>
+		<string>/path/to/hub/hubkeeper.py</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/path/to/hub</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/path/to/hub/hubkeeper.log</string>
+	<key>StandardErrorPath</key>
+	<string>/path/to/hub/hubkeeper.log</string>
+</dict>
+</plist>
