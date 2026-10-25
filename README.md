@@ -41,28 +41,6 @@ The iPad app organizes everything as "sessions": each card on the screen is some
 
 ## How it works
 
-```
- iPad app (SwiftUI)          Mac app "CONSOL Hub" (SwiftUI)
-        |                              |
-        |  HTTP on the LAN, port 8000  |  installs, monitors, starts/stops
-        v                              v
- +---------------------------------------------------+
- | Always-on Mac                                      |
- |                                                    |
- |  hubkeeper (port 8001, run by launchd)             |
- |    - starts and stops the hub                      |
- |    - advertises _consol-hub._tcp over Bonjour      |
- |                                                    |
- |  hub (FastAPI, port 8000)                          |
- |    - users, PIN login, tokens (SQLite)             |
- |    - Sonos control (SoCo, local UPnP)  ----------------> Sonos speakers
- |    - Apple TV control (pyatv)          ----------------> Apple TVs
- |    - Spotify Web API (search, browse)  ----------------> Spotify
- +---------------------------------------------------+
-
- Audio path: Sonos speaker <---- streams directly ----> Spotify
-```
-
 **The hub** (`hub/`) is a Python FastAPI service. It holds every credential and does every third-party call. It exposes a small HTTP API on port 8000 and normalizes all third-party data into flat shapes, so the apps never see raw Spotify, Sonos or Apple TV payloads.
 
 **Music playback runs locally through the speakers.** Spotify does not let third-party apps control Sonos speakers through Spotify Connect (its Web API rejects them as restricted devices). So the hub talks to the speakers directly on the LAN with [SoCo](https://github.com/SoCo/SoCo): to play something, it clears the room's Sonos queue, adds the Spotify URI with Sonos's ShareLink mechanism and starts playback. The speaker then streams the audio from Spotify itself, using the Spotify account linked in the Sonos app. Consol never handles audio. Transport and queue commands go to the coordinator of the room's Sonos group.

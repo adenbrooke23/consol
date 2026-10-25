@@ -21,14 +21,7 @@ It is a personal project, not a product. Spotify Premium, a Spotify Developer ap
 
 ## Architecture
 
-```
-iPad app ──HTTP :8000──> hub (FastAPI) ──SoCo / UPnP──> Sonos speakers ──streams──> Spotify
-Mac app  ──HTTP :8000/:8001──┘   │
-                                 ├──httpx──> Spotify Web API (search, browse, playlists)
-                                 └──pyatv──> Apple TVs (Companion + AirPlay)
-launchd ──keeps alive──> keeper (:8001) ──starts──> hub; advertises _consol-hub._tcp
-```
-
+- **Components.** The iPad app and the Mac app call the hub (FastAPI) over HTTP on port 8000; the Mac app also calls the keeper on port 8001. The hub controls the Sonos speakers with SoCo over UPnP, reads the Spotify Web API with httpx (search, browse, playlists) and controls the Apple TVs with pyatv (Companion and AirPlay). launchd keeps the keeper alive; the keeper starts the hub and advertises it over Bonjour as `_consol-hub._tcp`. The speakers stream audio from Spotify themselves.
 - **Playback path.** To play, the hub finds the room's Sonos group coordinator, clears its queue, adds the Spotify URI with SoCo's `ShareLinkPlugin`, and calls `play_from_queue`. The speaker streams the audio from Spotify using the account linked in the Sonos app. The hub never touches audio.
 - **Why not Spotify Connect.** Spotify's Web API returns 403 "Restricted device" when a third-party app tries to control a Sonos player, reports Sonos device IDs as null and often omits Sonos speakers from `/me/player/devices`. This is a Spotify policy, so the local SoCo path is the only playback route. Do not suggest switching to Connect.
 - **State normalization.** The hub turns all third-party data into flat shapes. Content items are `{kind, id, uri, title, subtitle, image}`. The player snapshot from `GET /spotify/player?room=` is `{active, is_playing, progress_ms, duration_ms, shuffle, repeat, device: {id, name, volume_percent}, group: [room names], track: {kind, id, uri, title, subtitle, image} | null}`. The apps never parse raw Spotify, Sonos or pyatv payloads.
