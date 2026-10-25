@@ -543,7 +543,7 @@ If the hub still answers on port 8000 afterwards, it was started outside launchd
 ├── docs/
 │   ├── design/style-guide.html   Original iPad app design specification
 │   └── images/                Logo and architecture animation
-├── AI_GUIDE.md                Brief for AI assistants helping with Consol
+├── AI_GUIDE.xml               Brief for AI assistants helping with Consol
 ├── LICENSE
 └── README.md
 ```
@@ -560,7 +560,7 @@ If the hub still answers on port 8000 afterwards, it was started outside launchd
   ```
 
   Restart from the apps returns `501` under `--reload`; that is intentional. To put the installed stack back, run `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.consol.hubkeeper.plist`.
-- **API exploration.** `http://127.0.0.1:8000/docs` lists every route with its request body. [AI_GUIDE.md](AI_GUIDE.md) has a summary of the routes and the rules the code depends on.
+- **API exploration.** `http://127.0.0.1:8000/docs` lists every route with its request body. [AI_GUIDE.xml](AI_GUIDE.xml) has a summary of the routes and the rules the code depends on.
 - **Rules worth keeping.** Every playback route takes a room and acts on that room's Sonos group coordinator; never add a playback command that does not name a room. Never send commands to the hidden half of a bonded Sonos pair. Keep the Spotify Web API for content. Keep secrets in the hub. Keep the protected Apple TV check in every path that reaches a TV.
 - **iPad app in the Simulator.** The Simulator talks to the hub at `127.0.0.1:8000` and skips Bonjour unless the `UITEST_DISCOVER=1` environment variable is set. Debug builds read several `UITEST_*` environment variables (listed in `ConsoleApp.swift`) that open specific screens for screenshots and checks. `UITEST_AUTOLOGIN=1` signs in as the mock admin "Alex" with PIN `1111`, so commands only work against a real hub that has a user with that name and PIN.
 - **Debug heartbeat.** Debug builds of the iPad app add `watch=1` to their player polls, and the hub pauses a watched room when its polls stop for more than 20 seconds. This keeps music from playing on after a crashed or killed development build. Release builds do not send it.

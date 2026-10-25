@@ -1,0 +1,488 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Consol: guide for AI assistants. Machine-readable, not meant for reading.
+  For people: paste or attach this file into an AI assistant (ChatGPT, Claude, Copilot or similar) before asking for help installing, configuring or extending Consol. It gives the assistant the context it needs. The README (README.md) has the full installation guide.
+-->
+<consol_ai_guide>
+  <provenance>This guide was written with AI assistance for use with AI tools.</provenance>
+  <instructions audience="assistant">You are helping someone install, configure, troubleshoot or modify Consol. Everything below describes the code as it is in this repository. Prefer it over general assumptions about Sonos, Spotify or Apple TV integrations, and follow the rules in "Rules the code depends on" when suggesting changes. When something here conflicts with what the user sees, ask them to check the code or the logs rather than guessing.</instructions>
+  <project>
+    <summary>Consol is a single-household home entertainment controller with four parts:</summary>
+    <component name="Hub">Hub (`hub/`): a Python 3.10+ FastAPI service on an always-on Mac, port 8000. It controls Sonos speakers with SoCo (local UPnP), plays Spotify on them through Sonos ShareLink, uses the Spotify Web API for search and browsing only, and controls Apple TVs with pyatv. It owns every credential and stores state in SQLite (`hub/data.db`).</component>
+    <component name="Keeper">Keeper (`hub/hubkeeper.py`): a standard-library supervisor on port 8001, run by launchd as the agent `local.consol.hubkeeper`. It starts and stops the hub and advertises it over Bonjour as `_consol-hub._tcp`.</component>
+    <component name="iPad app">iPad app (`Console/`, SwiftUI, Xcode target "Console", iPadOS 18.1+): the remote. It talks only to the hub over HTTP on the LAN, finds it through Bonjour, and signs users in with a four-digit PIN.</component>
+    <component name="Mac app">Mac app (`HubApp/`, SwiftUI, product name "CONSOL Hub", macOS 14+): an installer wizard and a dashboard. It bundles a copy of `hub/` and installs it to `~/Library/Application Support/CONSOL/hub`.</component>
+    <note>Default bundle identifiers are `com.example.consol` (iPad) and `com.example.consol.hub` (Mac), with no development team set. Users must set their own.</note>
+    <note>It is a personal project, not a product. Spotify Premium, a Spotify Developer app and a Spotify service link in the Sonos app are required.</note>
+  </project>
+  <architecture>
+    <topic name="Components">The iPad app and the Mac app call the hub (FastAPI) over HTTP on port 8000; the Mac app also calls the keeper on port 8001. The hub controls the Sonos speakers with SoCo over UPnP, reads the Spotify Web API with httpx (search, browse, playlists) and controls the Apple TVs with pyatv (Companion and AirPlay). launchd keeps the keeper alive; the keeper starts the hub and advertises it over Bonjour as `_consol-hub._tcp`. The speakers stream audio from Spotify themselves.</topic>
+    <topic name="Playback path">To play, the hub finds the room's Sonos group coordinator, clears its queue, adds the Spotify URI with SoCo's `ShareLinkPlugin`, and calls `play_from_queue`. The speaker streams the audio from Spotify using the account linked in the Sonos app. The hub never touches audio.</topic>
+    <topic name="Why not Spotify Connect">Spotify's Web API returns 403 "Restricted device" when a third-party app tries to control a Sonos player, reports Sonos device IDs as null and often omits Sonos speakers from `/me/player/devices`. This is a Spotify policy, so the local SoCo path is the only playback route. Do not suggest switching to Connect.</topic>
+    <topic name="State normalization">The hub turns all third-party data into flat shapes. Content items are `{kind, id, uri, title, subtitle, image}`. The player snapshot from `GET /spotify/player?room=` is `{active, is_playing, progress_ms, duration_ms, shuffle, repeat, device: {id, name, volume_percent}, group: [room names], track: {kind, id, uri, title, subtitle, image} | null}`. The apps never parse raw Spotify, Sonos or pyatv payloads.</topic>
+    <topic name="Speaker cache">`sonos.py` keeps a zone cache (5-minute lifetime). It refreshes through known speakers by unicast first, then multicast discovery, then speaker IPs saved in the `secrets` table under `sonos_zone_ips`. A successful refresh saves the IPs again. launchd-run processes cannot use multicast on macOS, so a keeper-started hub relies on the saved IPs. The Mac app's installer seeds them from a GUI process.</topic>
+    <topic name="Apple TV connections">Apple TV connections are held open per device (`appletv._session`) so that pushed now-playing state arrives. A stale connection is dropped and the command retried once.</topic>
+    <topic name="Auth"><![CDATA[Users have a role (`admin`, `member` or `kid`), a PBKDF2 PIN hash and one long-lived API token. `POST /login/pin` resolves a user from the PIN alone (PINs are unique) and returns the token. Mutations require `Authorization: Bearer <token>`. Reads are open.]]></topic>
+    <topic name="Keeper">`GET /health` and `GET /status` return `{ok, hub_running}`. `POST /start` and `POST /stop` need any valid user token (open while the users table is empty). Start spawns `hub/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000` detached, logging to `hub/hub.log`. Stop calls the hub's `POST /admin/stop`. "Running" means port 8000 answers.</topic>
+    <topic name="iPad discovery">The app browses `_consol-hub._tcp`, connects once to the first result to learn its IP, and stores it in UserDefaults (`console.hubhost`). A manual "Hub address" field on the Profile tab writes the same setting. The keeper URL is the same host on port 8001.</topic>
+  </architecture>
+  <rules instruction="Keep these intact in any change you suggest:">
+    <rule n="1" title="Every playback command names a room">Every playback command names a room, and the hub sends it to that room's speaker locally. All `/spotify/*` playback routes require `room` and resolve it to a Sonos device through `sonos._find`. Never add a playback, pause, volume, queue or transfer command that does not name a room, and never call Spotify Web API player endpoints without a target. Untargeted Spotify player calls act on whatever device is active on the account, which can be someone's phone or work computer.</rule>
+    <rule n="2" title="The Spotify Web API is for content only">The Spotify Web API is for content only: search, artists, albums, playlists, shows, audiobooks and the account profile. Playback control goes through Sonos.</rule>
+    <rule n="3" title="Group transport goes to the group coordinator">Transport, queue, play mode and seek act on `device.group.coordinator`. A grouped room's volume sets the group volume.</rule>
+    <rule n="4" title="Bonded-pair satellites are never commanded">`group.members` includes the hidden half of a stereo pair; filter with `is_visible` before acting on members. Commanding a satellite fails with UPnP error 1023.</rule>
+    <rule n="5" title="A coordinator with members cannot unjoin() (also UPnP 1023)">Moving or leaving uses `DelegateGroupCoordinationTo` (`sonos._delegate_and_leave`). In `switch_room`, extra members are removed only after the delegation, never before.</rule>
+    <rule n="6" title="Room chip taps switch, they do not group">Moving playback to another room is a straight switch (`POST /spotify/switch`). Grouping happens only through explicit group actions. Never auto-group.</rule>
+    <rule n="7" title="The hub is the only component holding secrets">Spotify credentials (`.env`), the Spotify refresh token, Apple TV credentials, PIN hashes and tokens (`data.db`) stay on the hub. The apps hold only the user's hub token. Never move a secret into an app, and never commit `.env` or `data.db`.</rule>
+    <rule n="8" title="Protected Apple TVs are refused by the hub">Identifiers listed in `PROTECTED_APPLE_TVS` (in `hub/.env`, comma-separated) are rejected by `appletv.guard()` in every path that can reach a TV: connecting, pair start, pair finish and the room-mapping route all return 403. Discovery reports them with `protected: true` and never as paired, and the iPad app hides their controls. Do not add a path to a TV that bypasses `guard()`.</rule>
+    <rule n="9" title="Do not reimplement Spotify audio">Do not reimplement Spotify audio (librespot and similar are out of scope and against Spotify's terms), do not stream audio through the hub, and do not suggest AirPlay audio for Spotify.</rule>
+    <rule n="10" title="Spotify development-mode limits are real">Spotify tightened development mode in February 2026: the app owner needs Premium, new apps allow five users, search `limit` is capped at 10, artist top tracks and the `popularity` fields are gone, playlist items are only returned for playlists the user owns or collaborates on, and several endpoints moved (library saves to `/me/library`, playlist creation to `POST /me/playlists`, `/playlists/{id}/tracks` to `/playlists/{id}/items`). The hub's like and playlist-edit calls still use the old paths and get 403, which the hub reports plainly instead of retrying. Keep `limit` at 10 or below on search and artist album requests.</rule>
+    <rule n="11" title="Never expose the hub to the internet">It is plain HTTP with PIN-derived tokens and no rate limiting.</rule>
+    <rule n="12" title="UPnP 701 and 711">UPnP 701 and 711 during skip or seek mean "nothing to skip to" or "nothing to seek in"; the hub maps them to friendly 409 responses. Keep that mapping when touching transport.</rule>
+  </rules>
+  <file_map>
+    <file path="hub/main.py">All HTTP routes, exception-to-status mapping, the Debug heartbeat watchdog, admin and user management.</file>
+    <file path="hub/sonos.py">Zone cache and discovery, rooms, now playing, player snapshot, ShareLink playback, switch, group, ungroup, volume, transport, queue.</file>
+    <file path="hub/spotify.py">Loads `hub/.env` into the environment, OAuth (authorization code flow), Web API helpers, normalization, development-mode workarounds.</file>
+    <file path="hub/appletv.py">Apple TV scan (tvOS devices only), pairing (Companion, AirPlay), held connections, status, power, apps, keys, text, seek, artwork, protected-device guard.</file>
+    <file path="hub/auth.py">PBKDF2 PIN hashing, token generation, `get_current_user`, `require_admin`, kid volume cap.</file>
+    <file path="hub/db.py">SQLite schema (`users`, `rooms`, `secrets`, `recents` and unused tables), secrets and room-mapping helpers. `HUB_DB` env var overrides the path.</file>
+    <file path="hub/models.py">Pydantic request bodies.</file>
+    <file path="hub/hubkeeper.py">Keeper HTTP server on 8001, Bonjour advertisement via `/usr/bin/dns-sd -R`, start and stop logic.</file>
+    <file path="hub/launchd/local.consol.hubkeeper.plist">launchd agent template for a manual install.</file>
+    <file path="hub/.env.example">Every configuration variable.</file>
+    <file path="hub/requirements.txt">fastapi, uvicorn[standard], soco, pyatv, pydantic>=2, httpx, requests (unpinned).</file>
+    <file path="Console/Console/Services/Hub.swift">The iPad app's only network client: base URL, token storage, every hub call.</file>
+    <file path="Console/Console/Services/HubDiscovery.swift">Bonjour browse and resolve.</file>
+    <file path="Console/Console/Stores/AuthStore.swift">PIN login (`/login/pin`), client-side lockout (3 failures, 30 seconds), PIN change.</file>
+    <file path="Console/Console/Stores/SessionStore.swift">Session cards, outputs (Sonos rooms plus paired and mapped TVs), playback polling.</file>
+    <file path="Console/Console/Screens/">Login, Stage and session chooser, Devices, Profile (in `Stage/PlaceholderTabs.swift`).</file>
+    <file path="Console/Console/ConsoleApp.swift">App entry and Debug-only `UITEST_*` launch hooks (`UITEST_AUTOLOGIN=1` signs in as mock admin "Alex", PIN 1111, which must exist on a real hub).</file>
+    <file path="Console/Console/Fonts/">Martian Mono (OFL, license included). General Sans is not redistributable and must be downloaded from Fontshare by the builder (four OTFs: Regular, Medium, Semibold, Bold); without it the app falls back to the system font.</file>
+    <file path="Console/Info.plist">Local network usage text, `NSBonjourServices` (`_consol-hub._tcp`), local-networking ATS exception.</file>
+    <file path="HubApp/HubApp/Services/HubInstaller.swift">Install steps, launchd plist generation, uninstall.</file>
+    <file path="HubApp/HubApp/Services/StackMonitor.swift">Dashboard polling, sign-in, user management, start, stop, restart.</file>
+    <file path="HubApp/HubApp/Screens/WizardView.swift, DashboardView.swift">Setup wizard and dashboard.</file>
+    <file path="HubApp/HubApp.xcodeproj">Contains a Run Script build phase that rsyncs `hub/` into the app bundle as `hub-payload`, excluding `.venv`, `data.db`, `.env`, `__pycache__` and logs.</file>
+    <file path="docs/design/style-guide.html">Original iPad app design specification (some features in it are not built).</file>
+  </file_map>
+  <hub_data>
+    <store name=".env">`SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, optional `SPOTIFY_REDIRECT_URI` (default `http://127.0.0.1:8000/spotify/callback`), optional `NETWORK_NAME`, optional `PROTECTED_APPLE_TVS` (comma-separated, case-insensitive). Plain `KEY=value` lines; the loader does not strip quotes or trailing comments. Real environment variables win over the file.</store>
+    <store name="Process environment only (read before .env is loaded)">`HUB_DB` (database path; the keeper ignores it and always uses `data.db` next to itself), `HUBKEEPER_AUTOSTART` (`0` disables starting the hub when the keeper launches).</store>
+    <store name="data.db tables in use"><![CDATA[`users` (name, role, pin_hash, api_token, max_volume, locked), `rooms` (room name to Apple TV identifier and optional HDMI input), `secrets` (`spotify_refresh_token`, `atv_credentials_<identifier>`, `sonos_zone_ips`, `network_name`), `recents` (last 30 items played on the speakers).]]></store>
+    <store name="Logs">`hub.log` (hub, written by the keeper's launch) and `hubkeeper.log` (keeper, from the launchd plist), both in the hub folder.</store>
+  </hub_data>
+  <setup_sequence instruction="Walk the user through these in order. Ask the listed questions, and confirm each check before moving on.">
+    <step n="1" title="Prerequisites">
+      <ask>Do you have a Mac that can stay on and logged in, with macOS 14 or later? An iPad with iPadOS 18.1 or later? Sonos speakers already working in the Sonos app? Spotify Premium? An Apple ID or paid Apple Developer membership? Which Xcode version? What does `python3 --version` print?</ask>
+      <check>Python must be 3.10 or later (the hub's type syntax fails on 3.9, which is Apple's `/usr/bin/python3`). Xcode 16 or later (last built with 26.3); Xcode 26 if the iPad runs iPadOS 26 or for TestFlight.</check>
+    </step>
+    <step n="2" title="Sonos service link">
+      <do>Ask the user to add Spotify in the Sonos app (Settings, services section) with the household Premium account.</do>
+      <check>the user can play Spotify on a room from the Sonos app.</check>
+    </step>
+    <step n="3" title="Spotify Developer app">
+      <do>Ask the user to create an app at developer.spotify.com/dashboard with redirect URI `http://127.0.0.1:8000/spotify/callback` and the Web API selected, then copy the client ID and secret. The developer account must have an active Premium subscription (Spotify rule since February 2026), so using the household Premium account is simplest. If the account they will link is not the developer account, it must be added under User Management (five users maximum for new apps).</do>
+      <check>they have both values. Never ask them to paste the secret into the chat; tell them where to enter it.</check>
+    </step>
+    <step n="4" title="Python (Mac app path)">
+      <do>The installer looks for Python 3.10 or later in the Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`), python.org and pyenv locations, builds `.venv` with the first match, rebuilds an existing `.venv` that uses an older Python, and stops with "Python 3.10 or later is required" if it finds none. If the user only has Apple's 3.9, have them install Python from python.org or with `brew install python` first.</do>
+      <check>after install, `"$HOME/Library/Application Support/CONSOL/hub/.venv/bin/python" --version` prints 3.10 or later.</check>
+    </step>
+    <step n="5" title="Install the hub">
+      <path name="Mac app">open `HubApp/HubApp.xcodeproj`, set signing (a team, or Sign to Run Locally) and a unique bundle ID, run, and complete the wizard (Spotify credentials, admin name and PIN, members with unique four-digit PINs, optional network name). Allow local network access when macOS asks.</path>
+      <path name="Manual"><![CDATA[`cd hub && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cp .env.example .env`, edit `.env`, run `.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000`, create the first admin with an unauthenticated `POST /users` (allowed only while there are no users), open `/rooms` once from that Terminal-started hub so it saves speaker IPs, then install the plist from `hub/launchd/` with its paths edited and `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/local.consol.hubkeeper.plist`.]]></path>
+      <check>`curl -s http://127.0.0.1:8001/health` returns `{"ok": true, "hub_running": true}` and `curl -s http://127.0.0.1:8000/rooms` lists the Sonos rooms.</check>
+    </step>
+    <step n="6" title="Authorize Spotify">
+      <do>Ask the user to open `http://127.0.0.1:8000/spotify/auth` in a browser on the hub Mac (the redirect goes to 127.0.0.1, so it must be that Mac), or press Link Spotify in the Mac app.</do>
+      <check>`curl -s http://127.0.0.1:8000/spotify/status` shows `"configured": true, "connected": true`.</check>
+    </step>
+    <step n="7" title="Build the iPad app">
+      <ask>free Apple ID or paid membership? Set the team and a unique bundle ID on the Console target. Recommend the Release build configuration for daily use (Debug builds send a heartbeat that makes the hub pause music about 20 seconds after polling stops). On first device install, Developer Mode must be on; with a free Apple ID, the developer certificate must be trusted in Settings and the install expires after 7 days.</ask>
+      <also>General Sans is not in the repository; the user downloads it from Fontshare and copies the four OTF files into `Console/Console/Fonts/` (optional; the system font is used otherwise).</also>
+      <check>the app launches and shows the PIN screen.</check>
+    </step>
+    <step n="8" title="Sign in">
+      <do>The user enters a PIN from the wizard and allows local network access.</do>
+      <check>the Stage appears and the chooser lists the Sonos rooms. If the app cannot reach the hub, see troubleshooting. On a device the app has no default hub address and learns it through Bonjour; the manual Hub address field is behind the sign-in screen, so the first sign-in requires Bonjour to work (same subnet, mDNS allowed, local network permission granted to the app).</check>
+    </step>
+    <step n="9" title="Optional: Apple TVs">
+      <do>See "Pair an Apple TV" below.</do>
+    </step>
+    <step n="10" title="Keep it running">
+      <do>The Mac must stay awake (Energy settings) and the hub's user must stay logged in (automatic login helps after power cuts), because the keeper is a per-user launchd agent.</do>
+    </step>
+  </setup_sequence>
+  <api>
+    <conventions><![CDATA[Base URL `http://<hub>:8000`. "Token" means `Authorization: Bearer <token>` from any user; "admin" means an admin's token; "open" means no token. Error bodies are `{"detail": "..."}`. Unknown rooms return 404. Interactive docs: `GET /docs`.]]></conventions>
+    <group name="Health, login and users">
+      <route auth="open">
+        <endpoint>GET /health</endpoint>
+        <detail>`{"status":"ok"}`</detail>
+      </route>
+      <route auth="open">
+        <endpoint>POST /login/pin</endpoint>
+        <detail>`{"pin":"1234"}` returns `{name, role, token}`. 401 wrong PIN, 403 locked.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>POST /login</endpoint>
+        <detail>`{"name":"...","pin":"1234"}` returns `{token}`. Used by the Mac app.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>GET /me</endpoint>
+        <detail>The caller's user row without hash or token.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>PUT /users/me/pin</endpoint>
+        <detail>`{"name":"","pin":"1234"}`; four digits; 409 if another user has it.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>GET /users</endpoint>
+        <detail>Roster: id, name, role, max_volume, locked.</detail>
+      </route>
+      <route auth="admin (open while no users exist)">
+        <endpoint>POST /users</endpoint>
+        <detail>`{"name":"...","role":"member","pin":"1234","max_volume":null}`. The bootstrap user is always admin. Returns the new token. 409 if the name or PIN is taken.</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>PUT /users/{name}/pin</endpoint>
+        <detail>`{"pin":"1234"}` resets a PIN.</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>POST /users/{name}/lock, /unlock</endpoint>
+        <detail>Lock refuses login and kills the token. Cannot lock yourself or the last unlocked admin.</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>DELETE /users/{name}</endpoint>
+        <detail>Cannot delete the last admin.</detail>
+      </route>
+    </group>
+    <group name="Admin">
+      <route auth="open">
+        <endpoint>GET /admin/info</endpoint>
+        <detail>`{"network": "..."}`</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>PUT /admin/network</endpoint>
+        <detail>`{"name":"..."}` sets the network label (stored in the DB, beats `NETWORK_NAME`).</detail>
+      </route>
+      <route auth="admin">
+        <endpoint><![CDATA[GET /admin/logs?source=hub|keeper&lines=200]]></endpoint>
+        <detail>Tail of `hub.log` or `hubkeeper.log`.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /admin/restart</endpoint>
+        <detail>Re-execs the hub in place (501 under `--reload`).</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /admin/stop</endpoint>
+        <detail>Exits the hub. Start again through the keeper.</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>PUT /admin/rooms/{name}/tv</endpoint>
+        <detail>`{"appletv_id":"...","hdmi_input":null}` maps a room name to an Apple TV. 403 for protected TVs.</detail>
+      </route>
+    </group>
+    <group name="Sonos and Spotify playback (local, room-targeted)">
+      <route auth="open">
+        <endpoint>GET /rooms</endpoint>
+        <detail>All rooms: name, uid, volume, group_id, coordinator_name, is_coordinator, members.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /now-playing, GET /rooms/{room}/now-playing</endpoint>
+        <detail>Speaker now-playing snapshots.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /spotify/player?room=</endpoint>
+        <detail>Player snapshot for the room (`watch=1` registers the Debug heartbeat). Without `room` it returns the Spotify account's active player, for debugging only.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/play</endpoint>
+        <detail>`{"room":"...","context_uri":"spotify:album:...","start_index":0}` or `{"room":"...","uris":["spotify:track:..."]}`. A single track URI plays inside its album. Neither field resumes.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/pause, /next, /previous</endpoint>
+        <detail>`{"room":"..."}`. Skip returns 409 at the end of the queue.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>PUT /spotify/shuffle</endpoint>
+        <detail>`{"room":"...","state":true}`</detail>
+      </route>
+      <route auth="token">
+        <endpoint>PUT /spotify/repeat</endpoint>
+        <detail>`{"room":"...","state":"off"|"context"|"track"}` (Sonos treats any non-off as repeat all).</detail>
+      </route>
+      <route auth="token">
+        <endpoint>PUT /spotify/volume</endpoint>
+        <detail>`{"room":"...","percent":30}`; group volume for grouped rooms.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/seek</endpoint>
+        <detail>`{"room":"...","position_ms":60000}`</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/switch</endpoint>
+        <detail>`{"from_room":"...","to_room":"..."}` moves playback.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/group</endpoint>
+        <detail>`{"rooms":["anchor","other"]}`, at least two; first is the coordinator.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/ungroup</endpoint>
+        <detail>`{"room":"..."}`</detail>
+      </route>
+      <route auth="open">
+        <endpoint><![CDATA[GET /spotify/queue?room=&limit=40]]></endpoint>
+        <detail>The room's queue with absolute 0-based positions and `playing_position` (1-based).</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/queue</endpoint>
+        <detail>`{"room":"...","uri":"spotify:track:..."}` appends.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/queue/play</endpoint>
+        <detail>`{"room":"...","position":3}`</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/queue/remove</endpoint>
+        <detail>`{"room":"...","positions":[3,4]}`</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/queue/reorder</endpoint>
+        <detail>`{"room":"...","from_position":5,"insert_before":1}`</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /group, POST /rooms/{room}/ungroup, PUT /rooms/{room}/volume, POST /rooms/{room}/transport/{play|pause|next|previous}</endpoint>
+        <detail>Older role-aware routes; the kid role's limits are checked here only.</detail>
+      </route>
+    </group>
+    <group name="Spotify content (Web API)">
+      <route auth="open">
+        <endpoint>GET /spotify/status</endpoint>
+        <detail>`{configured, connected, redirect_uri, scopes}`</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /spotify/auth, GET /spotify/callback</endpoint>
+        <detail>One-time OAuth in a browser on the hub Mac.</detail>
+      </route>
+      <route auth="open">
+        <endpoint><![CDATA[GET /spotify/search?q=&limit=8&scope=music|podcasts|books]]></endpoint>
+        <detail>`{results:[flat items]}`; keep `limit` at 10 or below.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /spotify/artists/{id}, /albums/{id}, /shows/{id}</endpoint>
+        <detail>Browse pages.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /spotify/playlists, /playlists/{id}/tracks</endpoint>
+        <detail>The account's playlists; tracks capped at 100.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /spotify/library</endpoint>
+        <detail>Saved shows and audiobooks.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /spotify/recents?limit=12</endpoint>
+        <detail>What the speakers played recently (hub-recorded).</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /spotify/me, /devices, /now-playing</endpoint>
+        <detail>Account profile and raw Connect state, for debugging.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /spotify/playlists, POST /spotify/playlists/{id}/tracks, PUT/DELETE /spotify/tracks/saved</endpoint>
+        <detail>Exist, but Spotify returns 403 for them (old endpoints, development mode); the hub answers 409 with an explanation.</detail>
+      </route>
+    </group>
+    <group name="Apple TV">
+      <note>`{device}` is a mapped room name or a raw identifier.</note>
+      <route auth="open">
+        <endpoint>GET /tv/devices</endpoint>
+        <detail>Scan (about 5 s) of tvOS devices: name, identifier, address, model, paired, room, protected.</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>POST /tv/pair/start</endpoint>
+        <detail>`{"identifier":"...","protocol":"Companion"|"AirPlay"}`; the TV shows a PIN.</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>POST /tv/pair/finish</endpoint>
+        <detail>`{"identifier":"...","pin":"1234"}` stores credentials.</detail>
+      </route>
+      <route auth="admin">
+        <endpoint>POST /tv/pair/cancel</endpoint>
+        <detail>`{"identifier":"..."}`</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /tv/{device}/status</endpoint>
+        <detail>power, app, app_id, state, title, position, total_time, `can` flags.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /tv/{device}/apps</endpoint>
+        <detail>Installed apps `{name, id}`.</detail>
+      </route>
+      <route auth="open">
+        <endpoint>GET /tv/{device}/artwork</endpoint>
+        <detail>Now-playing image bytes.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /tv/{device}/power/{on|off}</endpoint>
+      </route>
+      <route auth="token">
+        <endpoint>POST /tv/{device}/launch/{app_id}</endpoint>
+        <detail>Bundle ID from the apps list.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /tv/{device}/key/{button}?seconds=</endpoint>
+        <detail>up, down, left, right, select, menu, home, play_pause, skip_forward, skip_backward. `seconds` applies to skips.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /tv/{device}/text</endpoint>
+        <detail>`{"text":"..."}` replaces the focused text field; 409 if none.</detail>
+      </route>
+      <route auth="token">
+        <endpoint>POST /tv/{device}/seek</endpoint>
+        <detail>`{"position":600}` seconds; returns `applied` true or false.</detail>
+      </route>
+      <note>Apple TV errors map to 409 (needs re-pairing, or the app cannot do that), 504 (not answering), 502 (protocol error), 403 (protected) and 404 (not found on the network).</note>
+    </group>
+    <group name="Keeper (port 8001)">
+      <route auth="open">
+        <endpoint>GET /health, GET /status</endpoint>
+        <detail>`{ok, hub_running}`</detail>
+      </route>
+      <route auth="token (open while no users exist)">
+        <endpoint>POST /start, POST /stop</endpoint>
+        <detail>Start or stop the hub.</detail>
+      </route>
+    </group>
+  </api>
+  <common_tasks>
+    <shell_setup instruction="Use these shell variables in examples (run on the hub Mac; replace the PIN with an admin PIN):"><![CDATA[
+HUB=http://127.0.0.1:8000
+TOKEN=$(curl -s -X POST "$HUB/login/pin" -H 'Content-Type: application/json' \
+  -d '{"pin":"1234"}' | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+]]></shell_setup>
+    <task name="Add a user">Mac app dashboard, Users card (members only), or `curl -s -X POST "$HUB/users" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"name":"Guest","role":"member","pin":"4321"}'`. PINs must be four digits and unique. The iPad needs no update.</task>
+    <task name="Reset a PIN or lock someone out">Dashboard, or `PUT /users/{name}/pin` and `POST /users/{name}/lock`.</task>
+    <task name="Re-link Spotify (different account, or revoked access)">Open `http://127.0.0.1:8000/spotify/auth` on the hub Mac and approve again; the new refresh token replaces the old one. If the client ID or secret changed, edit `.env` first and restart the hub. The account should match the one linked in the Sonos app.</task>
+    <task name="Add Spotify credentials after a blank install">Edit `~/Library/Application Support/CONSOL/hub/.env` (`SPOTIFY_CLIENT_ID=...`, `SPOTIFY_CLIENT_SECRET=...`, plain `KEY=value` lines with no quotes or trailing comments), restart the hub, then link as above. Re-running the Mac app's setup also works: it merges `.env`, updating only the Spotify keys and `NETWORK_NAME` and keeping other lines such as `PROTECTED_APPLE_TVS`.</task>
+    <task name="Pair an Apple TV">`GET /tv/devices` to get the identifier; `POST /tv/pair/start` with `"protocol":"Companion"`, read the PIN on the TV, `POST /tv/pair/finish`; repeat with `"protocol":"AirPlay"`. The TV counts as paired only when both are stored.</task>
+    <task name="Map a room to a TV">`curl -s -X PUT "$HUB/admin/rooms/Den/tv" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"appletv_id":"AA:BB:CC:DD:EE:FF"}'`. URL-encode spaces. The iPad offers a TV in its chooser only when it is paired and mapped; the app loads outputs when its main screen appears, so relaunch or sign out and in.</task>
+    <task name="Protect a TV">Add its identifier (as shown by `GET /tv/devices`; matching ignores case) to `PROTECTED_APPLE_TVS` in `.env`, comma-separated, and restart the hub.</task>
+    <task name="Change the hub address on the iPad">Normally automatic. Otherwise, after signing in: Profile tab, Network card, Hub address field, enter the Mac's IP (`ipconfig getifaddr en0` on the Mac), press Return.</task>
+    <task name="Re-run speaker discovery (all speakers changed IP)">From Terminal in the hub folder, run a script that calls `soco.discover(timeout=8)` and saves `{player_name.lower(): ip}` to the `sonos_zone_ips` secret with `db.set_secret`; the README's troubleshooting section has the exact script.</task>
+    <task name="Restart the hub">Dashboard Restart, iPad Profile, or `curl -X POST "$HUB/admin/restart" -H "Authorization: Bearer $TOKEN"`. Start a stopped hub with `curl -X POST http://127.0.0.1:8001/start -H "Authorization: Bearer $TOKEN"` or the dashboard's Start (which can also kick the keeper through `launchctl kickstart`).</task>
+    <task name="Rebuild the apps">iPad: open `Console/Console.xcodeproj`, check signing, build Release to the device. Mac: open `HubApp/HubApp.xcodeproj` and run. After changing `hub/` code, the installed hub does not change until the Mac app is rebuilt and the hub reinstalled (or the changed files are copied into `~/Library/Application Support/CONSOL/hub` and the hub restarted). A reinstall keeps `.env`, `data.db` and `.venv`; Uninstall deletes them.</task>
+    <task name="Run the hub from the checkout for development"><![CDATA[`launchctl bootout gui/$(id -u)/local.consol.hubkeeper`, then `cd hub && .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 --reload`.]]></task>
+  </common_tasks>
+  <troubleshooting>
+    <case>
+      <symptom>Installer stops at "Wait for the hub to answer"</symptom>
+      <fix>Read `hub.log` in the install folder. `TypeError: unsupported operand type(s) for |` means Python 3.9; install Python 3.10+ and run the install again (the installer rebuilds an old `.venv`). Missing modules mean the dependency step failed.</fix>
+    </case>
+    <case>
+      <symptom>Installer says no speakers answered</symptom>
+      <fix><![CDATA[macOS local network permission for CONSOL Hub was denied or not yet granted. Allow it in System Settings > Privacy & Security > Local Network and run the install again. Speakers must be on the Mac's subnet.]]></fix>
+    </case>
+    <case>
+      <symptom>iPad: "Can't reach the hub"</symptom>
+      <fix><![CDATA[Same network? Guest network or VLAN blocking mDNS or client traffic? Local network permission for the app? macOS firewall blocking the venv's Python? Hub running (`curl http://<mac-ip>:8000/health` from another device)? The manual Hub address field is on the Profile tab, which requires signing in first.]]></fix>
+    </case>
+    <case>
+      <symptom>Wrong PIN on iPad</symptom>
+      <fix>PIN must exist in the hub's `users` table. Check with `GET /users` and an admin token, or reset it in the dashboard. Three wrong PINs lock the iPad's PIN screen for 30 seconds (client-side only).</fix>
+    </case>
+    <case>
+      <symptom>403 "account locked"</symptom>
+      <fix>The user is locked. Reactivate them in the dashboard or with `POST /users/{name}/unlock`.</fix>
+    </case>
+    <case>
+      <symptom>No rooms, or rooms vanish after a router restart</symptom>
+      <fix>The hub cannot reach any saved speaker IP. Re-run discovery from Terminal (see above). Recommend DHCP reservations.</fix>
+    </case>
+    <case>
+      <symptom>Play returns an error, or the speaker stays silent</symptom>
+      <fix>Sonos service link missing or tied to another account, account not Premium, or the URI is not playable in the account's market. Test from the Sonos app.</fix>
+    </case>
+    <case>
+      <symptom>409 "end of queue" on skip</symptom>
+      <fix>The queue has nothing after the current track. Expected for one-track queues.</fix>
+    </case>
+    <case>
+      <symptom>409 "nothing playing to scrub"</symptom>
+      <fix>Seek on a stopped room or empty queue.</fix>
+    </case>
+    <case>
+      <symptom>409 about playlist or library edits</symptom>
+      <fix>Spotify returns 403 for the hub's write calls, which use pre-February-2026 endpoints. Fixing it would mean moving to the new endpoints, and it is unverified whether development mode allows them.</fix>
+    </case>
+    <case>
+      <symptom>500 "Spotify creds missing (hub/.env)"</symptom>
+      <fix>`.env` lacks the client ID or secret. Edit and restart.</fix>
+    </case>
+    <case>
+      <symptom>409 starting with "not connected"</symptom>
+      <fix>Spotify was never authorized or the token was lost. Authorize again.</fix>
+    </case>
+    <case>
+      <symptom>Spotify "INVALID_CLIENT: Invalid redirect URI"</symptom>
+      <fix>Dashboard redirect URI must equal `SPOTIFY_REDIRECT_URI` exactly.</fix>
+    </case>
+    <case>
+      <symptom>Music pauses about 20 s after the iPad locks</symptom>
+      <fix>Debug build heartbeat. Build Release.</fix>
+    </case>
+    <case>
+      <symptom>`/tv/devices` is empty</symptom>
+      <fix>TVs asleep or on another network, or multicast is blocked for the launchd-run hub (there is no unicast fallback for Apple TVs yet). Try running the hub from Terminal to compare.</fix>
+    </case>
+    <case>
+      <symptom>Apple TV 409 "needs re-pairing"</symptom>
+      <fix>Credentials invalid. Pair both protocols again.</fix>
+    </case>
+    <case>
+      <symptom>Apple TV 409 "did not announce ..."</symptom>
+      <fix>Incomplete mDNS announcement; retry after a moment.</fix>
+    </case>
+    <case>
+      <symptom>Apple TV 504 "not answering"</symptom>
+      <fix>TV asleep or unreachable; the next request reconnects.</fix>
+    </case>
+    <case>
+      <symptom>Apple TV seek returns `applied: false`</symptom>
+      <fix>The app refused it, often during ads.</fix>
+    </case>
+    <case>
+      <symptom>Apple TV 403 "protected device"</symptom>
+      <fix>Listed in `PROTECTED_APPLE_TVS`. Intended.</fix>
+    </case>
+    <case>
+      <symptom>Restart returns 501</symptom>
+      <fix>Hub is running under `--reload` or not via the uvicorn CLI; use stop and start.</fix>
+    </case>
+    <case>
+      <symptom>Code changes have no effect</symptom>
+      <fix>The installed hub runs from `~/Library/Application Support/CONSOL/hub`, not the checkout.</fix>
+    </case>
+    <case>
+      <symptom>Mac app "Wrong name or PIN"</symptom>
+      <fix>`/login` matches the name exactly, including case.</fix>
+    </case>
+    <case>
+      <symptom>iPad app stops launching after 7 days</symptom>
+      <fix>Free Apple ID provisioning expired; reinstall from Xcode.</fix>
+    </case>
+  </troubleshooting>
+  <extending>
+    <guideline>Add hub features as small, predictable routes in `hub/main.py`, with logic in the relevant module. Normalize every third-party payload into flat shapes before returning it.</guideline>
+    <guideline>Any route that changes state takes `user: dict = Depends(auth.get_current_user)`; add `auth.require_admin(user)` for household-level settings.</guideline>
+    <guideline>Any new playback route must take a room and go through `sonos._find(room).group.coordinator`.</guideline>
+    <guideline>Any new Apple TV path must go through `appletv.guard()` (directly or via `_session` and `_connect`).</guideline>
+    <guideline>SoCo calls are blocking, so Sonos routes are plain `def` (FastAPI runs them in a thread pool). pyatv is async, so Apple TV routes are `async def`.</guideline>
+    <guideline>Keep Spotify list `limit` values at 10 or below where development mode enforces it. If you add or fix write features (likes, playlists), use the post-February-2026 endpoints (`PUT`/`DELETE /me/library` with URIs, `POST /me/playlists`, `/playlists/{id}/items`) and check against Spotify's current documentation; it has not been verified whether development mode allows them.</guideline>
+    <guideline>In the iPad app, `Hub.swift` is the only place that talks to the network. The hub is authoritative; the app reflects its state.</guideline>
+    <guideline>There are no automated tests. Verify changes against real devices, and test playback only with a named room.</guideline>
+  </extending>
+</consol_ai_guide>

@@ -2,7 +2,7 @@
 
 The Consol hub: a Python FastAPI service that runs on an always-on Mac and controls Sonos speakers, Spotify playback on those speakers, and Apple TVs. The iPad app and the Mac app talk to it over the local network on port 8000.
 
-Installation, configuration, Apple TV pairing and troubleshooting are covered in the [main README](../README.md). The route summary and the rules the code depends on are in [AI_GUIDE.md](../AI_GUIDE.md).
+Installation, configuration, Apple TV pairing and troubleshooting are covered in the [main README](../README.md). The route summary and the rules the code depends on are in [AI_GUIDE.xml](../AI_GUIDE.xml).
 
 ## Files
 
